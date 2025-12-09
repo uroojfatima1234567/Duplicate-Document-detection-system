@@ -1,3 +1,4 @@
+# streamlit_app.py
 import os
 import io
 import json
@@ -16,30 +17,68 @@ import smtplib
 from email.message import EmailMessage
 from datetime import datetime
 
-# ----------------- Page config -----------------
-st.set_page_config(page_title="AI Duplicate Document Detector", page_icon="📁", layout="wide")
+# ---------------- Page config ----------------
+st.set_page_config(page_title="AI Duplicate Detector — Dark", page_icon="📁", layout="wide")
+# Custom CSS for dark premium theme (glass + neon)
+st.markdown(
+    """
+    <style>
+    :root{
+      --bg:#0f1115;
+      --card:#121316;
+      --muted:#9aa3b2;
+      --accent:#32d1ff;
+      --accent-2:#6a5cff;
+      --glass: rgba(255,255,255,0.03);
+      --success:#39d98a;
+      --danger:#ff6b6b;
+    }
+    html, body, [class*="stApp"]{
+      background: linear-gradient(180deg, #07080a 0%, #0f1115 100%);
+      color: #dbe7ff;
+    }
+    .stToolbar {display:none}
+    .app-card{
+      background: linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01));
+      border-radius:14px;
+      padding:18px;
+      box-shadow: 0 6px 24px rgba(0,0,0,0.6);
+      border: 1px solid rgba(255,255,255,0.03);
+    }
+    .muted { color: var(--muted); }
+    .neon { color: var(--accent); text-shadow: 0 0 12px rgba(50,209,255,0.12); }
+    .btn-primary {
+      background: linear-gradient(90deg, var(--accent), var(--accent-2));
+      color: #06121a !important;
+      border-radius: 10px;
+      padding: 8px 18px;
+      font-weight: 600;
+      box-shadow: 0 6px 18px rgba(106,92,255,0.12);
+    }
+    .small {
+      font-size:12px;
+      color:var(--muted);
+    }
+    .result-dup { color: var(--success); font-weight:700; }
+    .result-no { color: var(--danger); font-weight:700; }
+    .logo-round { border-radius:12px; border:1px solid rgba(255,255,255,0.03); }
+    .sidebar .stButton>button { border-radius:10px; }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
 # ---------- Secrets / config ----------
-# For email sending, set these in Streamlit secrets (or environment variables)
-# Example .streamlit/secrets.toml:
-# [smtp]
-# server = "smtp.gmail.com"
-# port = 587
-# username = "youremail@gmail.com"
-# password = "app_password"
-
-SMTP = st.secrets.get("smtp", {})  # may be empty dict if not set
+SMTP = st.secrets.get("smtp", {})  # expects server, port, username, password (optional)
 
 # --------------- Model (cached) ----------------
 @st.cache_resource(show_spinner=False)
 def load_model():
     return SentenceTransformer("all-MiniLM-L6-v2")
-
 model = load_model()
 
 # --------------- Helpers: Text extraction ----------------
 def extract_text_from_image_bytes(file_bytes):
-    # read image from bytes (cv2)
     np_arr = np.frombuffer(file_bytes, np.uint8)
     img = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
     if img is None:
@@ -58,13 +97,10 @@ def extract_text_from_pdf_bytes(file_bytes):
             page_text = page.extract_text()
             if page_text:
                 text += page_text + "\n"
-        # if text found return it; otherwise fallback to image-based OCR (needs poppler/tesseract)
         if text.strip():
             return text
     except Exception:
         pass
-
-    # fallback to image conversion (may need poppler installed on server)
     try:
         pages = convert_from_bytes(file_bytes)
         for page in pages:
@@ -75,7 +111,6 @@ def extract_text_from_pdf_bytes(file_bytes):
                 text += extract_text_from_image_bytes(file_bytes_img)
                 os.unlink(tmp.name)
     except Exception:
-        # If poppler or tesseract not present on server, indicate OCR unavailable
         text += "\n\n[OCR fallback unavailable on server — poppler/tesseract may be missing]"
     return text
 
@@ -98,6 +133,7 @@ def extract_text_from_docx_bytes(file_bytes):
 def extract_text_from_bytes(uploaded_file):
     name = uploaded_file.name.lower()
     b = uploaded_file.read()
+    # reset cursor for upstream reuse if needed
     if name.endswith(".pdf"):
         return extract_text_from_pdf_bytes(b)
     if name.endswith(".docx"):
@@ -118,216 +154,224 @@ def create_embedding(text):
     return model.encode(text)
 
 def cosine_similarity(a, b):
-    # handle zero vectors
     if np.linalg.norm(a) == 0 or np.linalg.norm(b) == 0:
         return 0.0
     return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b)))
 
-# ---------------- UI: Header ----------------
-with st.container():
-    cols = st.columns([0.12, 1, 0.8])
-    with cols[0]:
-        st.image("https://raw.githubusercontent.com/uroojfatima1234567/placeholder/main/logo.png", width=70)  # replace with your logo URL or local file
-    with cols[1]:
-        st.markdown("<h1 style='margin:0'>📁 AI Duplicate Document Detector</h1>", unsafe_allow_html=True)
-        st.markdown("Upload documents (PDF/DOCX/PNG/JPG). The app extracts text, creates embeddings, and compares files pairwise.")
-    with cols[2]:
-        st.metric(label="Model", value="all-MiniLM-L6-v2")
-        st.caption("Developed by Urooj Fatima")
-
-st.divider()
-
-# ---------------- Upload + manage files panel ----------------
-st.sidebar.header("Upload & Manage Files")
-uploaded = st.sidebar.file_uploader("Upload files (pdf, docx, jpg, png) — multiple allowed", accept_multiple_files=True, type=["pdf","docx","jpg","jpeg","png"])
-
-# keep a session-state list of files (so user can rename/delete before comparing)
+# ---------------- Session state setup ----------------
 if "files" not in st.session_state:
-    st.session_state["files"] = []  # each item: {"name":..., "file": UploadedFile, "modified_name":...}
+    st.session_state["files"] = []  # {"orig_key": (name,size), "name": original, "file":UploadedFile, "modified_name":str}
 
-# add newly uploaded files to session_state
-if uploaded:
-    for u in uploaded:
-        # avoid duplicates by filename+size
-        key = (u.name, len(u.getvalue()))
-        exists = False
-        for f in st.session_state["files"]:
-            if (f["orig_key"] == key):
-                exists = True
-                break
-        if not exists:
-            st.session_state["files"].append({"orig_key": key, "name": u.name, "file": u, "modified_name": u.name})
-
-# file manager UI (rename / delete)
-st.sidebar.markdown("### Current files")
-if st.session_state["files"]:
-    for idx, f in enumerate(st.session_state["files"]):
-        cols = st.sidebar.columns([0.6, 0.25, 0.15])
-        with cols[0]:
-            st.text_input(label=f"Rename #{idx+1}", key=f"rename_{idx}", value=f["modified_name"], on_change=lambda i=idx: st.session_state["files"].__setitem__(i, {**st.session_state['files'][i], "modified_name": st.session_state[f"rename_{i}"]}))
-        with cols[1]:
-            st.caption(f["name"])
-        with cols[2]:
-            if st.sidebar.button("Delete", key=f"del_{idx}"):
-                st.session_state["files"].pop(idx)
-                st.experimental_rerun()
-else:
-    st.sidebar.info("No files uploaded yet.")
-
-st.sidebar.markdown("---")
-st.sidebar.markdown("🔧 Options")
-similarity_threshold = st.sidebar.slider("Duplicate threshold (%)", 0, 100, 90)
-include_extracted_text_in_report = st.sidebar.checkbox("Include extracted text in report", value=False)
-
-st.sidebar.markdown("---")
-st.sidebar.write("📬 Email report (optional)")
-send_email_to = st.sidebar.text_input("Send report to (email)", value="")
-st.sidebar.caption("To enable sending, add SMTP credentials to Streamlit secrets under [smtp]")
-
-st.sidebar.markdown("---")
-st.sidebar.caption("Tip: For OCR to work on server, Tesseract and Poppler must be installed. If not installed, OCR fallback may be unavailable.")
-
-# ---------------- Main actions ----------------
-st.header("Files & Actions")
-
-col1, col2 = st.columns([2,1])
-with col1:
-    st.subheader("Uploaded files")
-    if st.session_state["files"]:
-        df_display = pd.DataFrame([{"Uploaded name": f["name"], "Use name": f["modified_name"]} for f in st.session_state["files"]])
-        st.table(df_display)
-    else:
-        st.info("No files in session. Upload files via the sidebar.")
-
-with col2:
-    if st.button("🔍 Compare files now", type="primary"):
-        if len(st.session_state["files"]) < 2:
-            st.warning("Please upload at least two files to compare.")
-        else:
-            # run comparison
-            with st.spinner("Extracting text & creating embeddings..."):
-                results = []
-                texts = {}
-                embeddings = {}
-                total = len(st.session_state["files"])
-                for i, f in enumerate(st.session_state["files"], start=1):
-                    st.write(f"Processing **{f['modified_name']}**")
-                    uploaded_file = f["file"]
-                    # ensure read pointer at start
-                    uploaded_file.seek(0)
-                    text = extract_text_from_bytes(uploaded_file)
-                    texts[f["modified_name"]] = text
-                    embeddings[f["modified_name"]] = create_embedding(text)
-                    st.progress(i/total)
-
-            # pairwise comparison
-            st.success("Text extraction done. Comparing...")
-            pairs = []
-            files_names = [f["modified_name"] for f in st.session_state["files"]]
-            for i in range(len(files_names)):
-                for j in range(i+1, len(files_names)):
-                    a = files_names[i]
-                    b = files_names[j]
-                    sim = cosine_similarity(embeddings[a], embeddings[b])
-                    percent = round(sim * 100, 2)
-                    is_dup = percent >= similarity_threshold
-                    pairs.append({"file_a": a, "file_b": b, "similarity": percent, "duplicate": is_dup})
-
-            results_df = pd.DataFrame(pairs).sort_values("similarity", ascending=False).reset_index(drop=True)
-            st.markdown("### 🔎 Comparison results")
-            st.dataframe(results_df.style.applymap(lambda v: "background-color: #b9f6ca" if isinstance(v,bool) and v else None, subset=["duplicate"]))
-
-            # Expanders for extracted text (7)
-            st.markdown("### 📄 Extracted texts")
-            for name, txt in texts.items():
-                with st.expander(f"{name} — show extracted text"):
-                    if txt.strip():
-                        st.code(txt[:10000], language="text")  # show first 10k chars
-                        if len(txt) > 10000:
-                            st.caption("Large text truncated in preview; full text can be included in downloadable report.")
-                    else:
-                        st.info("No text was extracted (maybe image OCR failed on server).")
-
-            # Export (4)
-            st.markdown("### 💾 Export report")
-            timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-            base_name = f"dup-report-{timestamp}"
-            # JSON
-            report_json = {
-                "generated_at_utc": timestamp,
-                "files": files_names,
-                "pairs": pairs,
-                "texts_included": include_extracted_text_in_report,
-                "texts": texts if include_extracted_text_in_report else None
-            }
-            json_bytes = json.dumps(report_json, indent=2).encode("utf-8")
-            st.download_button(label="Download JSON report", data=json_bytes, file_name=f"{base_name}.json", mime="application/json")
-
-            # TXT
-            txt_buf = io.StringIO()
-            txt_buf.write(f"Duplicate Detection Report — generated {timestamp} UTC\n\n")
-            txt_buf.write("Pairs:\n")
-            for p in pairs:
-                txt_buf.write(f"{p['file_a']}  VS  {p['file_b']}  =>  {p['similarity']}% {'DUPLICATE' if p['duplicate'] else 'NOT DUPLICATE'}\n")
-            if include_extracted_text_in_report:
-                txt_buf.write("\n\nExtracted texts:\n")
-                for k, v in texts.items():
-                    txt_buf.write(f"\n---- {k} ----\n")
-                    txt_buf.write(v + "\n")
-            st.download_button("Download TXT report", data=txt_buf.getvalue().encode("utf-8"), file_name=f"{base_name}.txt", mime="text/plain")
-
-            # PDF via fpdf (simple)
-            pdf = FPDF()
-            pdf.set_auto_page_break(auto=True, margin=15)
-            pdf.add_page()
-            pdf.set_font("Arial", size=12)
-            pdf.cell(0, 8, "Duplicate Detection Report", ln=True)
-            pdf.cell(0, 6, f"Generated: {timestamp} UTC", ln=True)
-            pdf.ln(4)
-            for p in pairs:
-                pdf.multi_cell(0, 7, f"{p['file_a']}  VS  {p['file_b']}  =>  {p['similarity']}%  {'DUPLICATE' if p['duplicate'] else 'NOT DUPLICATE'}")
-            if include_extracted_text_in_report:
-                for k, v in texts.items():
-                    pdf.add_page()
-                    pdf.set_font("Arial", "B", 12)
-                    pdf.multi_cell(0, 7, f"---- {k} ----")
-                    pdf.set_font("Arial", size=10)
-                    # limit text written to keep PDF reasonable
-                    pdf.multi_cell(0, 6, v[:20000] + ("\n\n[truncated]" if len(v) > 20000 else ""))
-            pdf_bytes = pdf.output(dest='S').encode('latin-1', errors='ignore')
-            st.download_button("Download PDF report", data=pdf_bytes, file_name=f"{base_name}.pdf", mime="application/pdf")
-
-            # Email (10)
-            if send_email_to:
-                if not SMTP:
-                    st.warning("SMTP credentials missing from Streamlit secrets — can't send email.")
-                else:
-                    if st.button("Send report by email"):
-                        try:
-                            msg = EmailMessage()
-                            msg["Subject"] = f"Duplicate Report {timestamp}"
-                            msg["From"] = SMTP.get("username")
-                            msg["To"] = send_email_to
-                            msg.set_content("Attached is the duplicate detection report.")
-
-                            msg.add_attachment(json_bytes, maintype="application", subtype="json", filename=f"{base_name}.json")
-                            msg.add_attachment(pdf_bytes, maintype="application", subtype="pdf", filename=f"{base_name}.pdf")
-
-                            server = smtplib.SMTP(SMTP.get("server"), int(SMTP.get("port", 587)))
-                            server.starttls()
-                            server.login(SMTP.get("username"), SMTP.get("password"))
-                            server.send_message(msg)
-                            server.quit()
-                            st.success(f"Email sent to {send_email_to}")
-                        except Exception as e:
-                            st.error(f"Failed to send email: {e}")
-
-# ---------------- Footer (9) ----------------
-st.markdown("""---""")
+# ---------------- Header (neon) ----------------
 with st.container():
-    c1, c2 = st.columns([1,3])
-    with c1:
-        st.image("https://raw.githubusercontent.com/uroojfatima1234567/placeholder/main/logo_small.png", width=80)  # replace or remove
-    with c2:
-        st.write("Developed by **Urooj Fatima** • Duplicate Document Detector • Built with 🤖 SentenceTransformers & Streamlit")
-        st.caption("Note: For full OCR support on deployed servers, tesseract & poppler must be installed. Locally, set pytesseract.pytesseract.tesseract_cmd if needed.")
+    left, center, right = st.columns([0.12, 1, 0.28])
+    with left:
+        # Replace with your logo path or hosted image URL if you have one
+        st.image("https://raw.githubusercontent.com/uroojfatima1234567/placeholder/main/logo_small.png", width=72, clamp=False, output_format="auto")
+    with center:
+        st.markdown("<div style='margin-bottom:4px'><h1 class='neon' style='margin:0'>📁 AI Duplicate Document Detector</h1></div>", unsafe_allow_html=True)
+        st.markdown("<div class='small muted'>Dark / Premium • Compare documents using SentenceTransformers</div>", unsafe_allow_html=True)
+    with right:
+        st.metric(label="Model", value="all-MiniLM-L6-v2")
+
+st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
+
+# ---------------- Sidebar controls ----------------
+with st.sidebar:
+    st.markdown("<div class='app-card'>", unsafe_allow_html=True)
+    st.markdown("### ⚙️ Upload & Settings")
+    uploaded = st.file_uploader("Upload files (pdf, docx, jpg, png) — multiple", accept_multiple_files=True, type=["pdf","docx","jpg","jpeg","png"])
+    if uploaded:
+        for u in uploaded:
+            key = (u.name, len(u.getvalue()))
+            if not any(f["orig_key"] == key for f in st.session_state["files"]):
+                st.session_state["files"].append({"orig_key": key, "name": u.name, "file": u, "modified_name": u.name})
+    st.markdown("---")
+    st.write("**Files in session**")
+    if st.session_state["files"]:
+        for idx, f in enumerate(st.session_state["files"]):
+            cols = st.columns([0.62, 0.28, 0.1])
+            with cols[0]:
+                new_name = st.text_input(label=f"Rename #{idx+1}", key=f"rename_{idx}", value=f["modified_name"])
+                # update modified_name when typed
+                st.session_state["files"][idx]["modified_name"] = new_name
+            with cols[1]:
+                st.caption(f["name"])
+            with cols[2]:
+                if st.button("🗑", key=f"del_{idx}"):
+                    st.session_state["files"].pop(idx)
+                    st.experimental_rerun()
+    else:
+        st.caption("No files uploaded.")
+
+    st.markdown("---")
+    similarity_threshold = st.slider("Duplicate threshold (%)", 0, 100, 90)
+    include_extracted_text_in_report = st.checkbox("Include extracted text in report", value=False)
+    send_email_to = st.text_input("Send report to (email)", value="")
+    st.caption("To enable email, add SMTP under Streamlit secrets as [smtp] (server, port, username, password).")
+    st.markdown("</div>", unsafe_allow_html=True)
+
+# ---------------- Main layout ----------------
+st.markdown("<div class='app-card'>", unsafe_allow_html=True)
+st.subheader("Files & Actions")
+cols = st.columns([2, 1])
+with cols[0]:
+    if st.session_state["files"]:
+        display_df = pd.DataFrame([{"Uploaded name": f["name"], "Use as": f["modified_name"]} for f in st.session_state["files"]])
+        st.table(display_df)
+    else:
+        st.info("Upload files using the sidebar to begin.")
+
+with cols[1]:
+    compare_btn = st.button("🔍 Compare files now", key="compare", help="Run pairwise comparison")
+    st.markdown("<div class='small muted'>Tip: first run extraction (heavy operations may take time)</div>", unsafe_allow_html=True)
+st.markdown("</div>", unsafe_allow_html=True)
+
+# ---------------- Compare action ----------------
+if compare_btn:
+    if len(st.session_state["files"]) < 2:
+        st.warning("Please upload at least two files to compare.")
+    else:
+        # extraction + embeddings
+        status_placeholder = st.empty()
+        progress_bar = st.progress(0)
+        total = len(st.session_state["files"])
+        texts = {}
+        embeddings = {}
+        status_placeholder.info("🔄 Extracting text and building embeddings...")
+        for i, f in enumerate(st.session_state["files"], start=1):
+            name = f["modified_name"]
+            status_placeholder.info(f"🔎 Processing: {name}")
+            uploaded_file = f["file"]
+            uploaded_file.seek(0)
+            try:
+                text = extract_text_from_bytes(uploaded_file)
+            except Exception as e:
+                text = ""
+            texts[name] = text
+            embeddings[name] = create_embedding(text)
+            progress_bar.progress(min(i/total, 1.0))
+        status_placeholder.success("✅ Extraction complete. Comparing now...")
+        # pairwise compare
+        pairs = []
+        names = [f["modified_name"] for f in st.session_state["files"]]
+        for i in range(len(names)):
+            for j in range(i+1, len(names)):
+                a, b = names[i], names[j]
+                sim = cosine_similarity(embeddings[a], embeddings[b])
+                percent = round(sim * 100, 2)
+                dup = percent >= similarity_threshold
+                pairs.append({"file_a": a, "file_b": b, "similarity": percent, "duplicate": dup})
+
+        results_df = pd.DataFrame(pairs).sort_values("similarity", ascending=False).reset_index(drop=True)
+        # results card
+        st.markdown("<div class='app-card'>", unsafe_allow_html=True)
+        st.markdown("### 🔎 Results")
+        # highlight duplicate rows with color using st.dataframe (pandas style)
+        def highlight_dup(val):
+            if isinstance(val, bool) and val:
+                return 'background-color: rgba(57,217,138,0.12); color: var(--success); font-weight:700;'
+            return ''
+        try:
+            styled = results_df.style.applymap(lambda v: 'color: var(--success); font-weight:bold;' if (isinstance(v,bool) and v) else '', subset=['duplicate'])
+            st.dataframe(results_df, use_container_width=True)
+        except Exception:
+            st.dataframe(results_df, use_container_width=True)
+        st.markdown("</div>", unsafe_allow_html=True)
+
+        # Expanders for extracted text
+        st.markdown("<div class='app-card'>", unsafe_allow_html=True)
+        st.markdown("### 📄 Extracted Texts")
+        for name, txt in texts.items():
+            with st.expander(f"{name} — preview"):
+                if txt.strip():
+                    # show first 12k chars for preview
+                    st.code(txt[:12000], language="text")
+                    if len(txt) > 12000:
+                        st.caption("Preview truncated — full text can be included in downloads.")
+                else:
+                    st.info("No text extracted (OCR/pdftotext may be unavailable).")
+        st.markdown("</div>", unsafe_allow_html=True)
+
+        # Export options (JSON, TXT, PDF)
+        st.markdown("<div class='app-card'>", unsafe_allow_html=True)
+        st.markdown("### 💾 Export & Email")
+        timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        base_name = f"dup-report-{timestamp}"
+        report_json = {
+            "generated_at_utc": timestamp,
+            "files": names,
+            "pairs": pairs,
+            "texts_included": include_extracted_text_in_report,
+            "texts": texts if include_extracted_text_in_report else None
+        }
+        json_bytes = json.dumps(report_json, indent=2).encode("utf-8")
+        st.download_button("📥 Download JSON", data=json_bytes, file_name=f"{base_name}.json", mime="application/json")
+        # txt
+        txt_buf = io.StringIO()
+        txt_buf.write(f"Duplicate Detection Report — {timestamp} UTC\n\n")
+        for p in pairs:
+            txt_buf.write(f"{p['file_a']}  vs  {p['file_b']}  =>  {p['similarity']}%  {'DUPLICATE' if p['duplicate'] else 'NOT DUPLICATE'}\n")
+        if include_extracted_text_in_report:
+            txt_buf.write("\n--- Extracted Texts ---\n")
+            for k, v in texts.items():
+                txt_buf.write(f"\n---- {k} ----\n")
+                txt_buf.write(v + "\n")
+        st.download_button("📥 Download TXT", data=txt_buf.getvalue().encode("utf-8"), file_name=f"{base_name}.txt", mime="text/plain")
+
+        # PDF
+        pdf = FPDF()
+        pdf.set_auto_page_break(auto=True, margin=12)
+        pdf.add_page()
+        pdf.set_font("Arial", size=12)
+        pdf.cell(0, 8, "Duplicate Detection Report", ln=True)
+        pdf.set_font("Arial", size=10)
+        pdf.cell(0, 6, f"Generated: {timestamp} UTC", ln=True)
+        pdf.ln(4)
+        for p in pairs:
+            pdf.multi_cell(0, 7, f"{p['file_a']}  vs  {p['file_b']}  =>  {p['similarity']}%  {'DUPLICATE' if p['duplicate'] else 'NOT DUPLICATE'}")
+        if include_extracted_text_in_report:
+            for k, v in texts.items():
+                pdf.add_page()
+                pdf.set_font("Arial", "B", 12)
+                pdf.multi_cell(0, 7, f"---- {k} ----")
+                pdf.set_font("Arial", size=10)
+                pdf.multi_cell(0, 6, v[:20000] + ("\n\n[truncated]" if len(v) > 20000 else ""))
+        pdf_bytes = pdf.output(dest='S').encode('latin-1', errors='ignore')
+        st.download_button("📥 Download PDF", data=pdf_bytes, file_name=f"{base_name}.pdf", mime="application/pdf")
+
+        # Email send
+        if send_email_to:
+            if not SMTP:
+                st.warning("SMTP not set in Streamlit secrets. Add [smtp] credentials to send email.")
+            else:
+                if st.button("✉️ Send report via Email"):
+                    try:
+                        msg = EmailMessage()
+                        msg["Subject"] = f"Duplicate Report {timestamp}"
+                        msg["From"] = SMTP.get("username")
+                        msg["To"] = send_email_to
+                        msg.set_content("Attached is the duplicate detection report.")
+                        msg.add_attachment(json_bytes, maintype="application", subtype="json", filename=f"{base_name}.json")
+                        msg.add_attachment(pdf_bytes, maintype="application", subtype="pdf", filename=f"{base_name}.pdf")
+                        server = smtplib.SMTP(SMTP.get("server"), int(SMTP.get("port", 587)))
+                        server.starttls()
+                        server.login(SMTP.get("username"), SMTP.get("password"))
+                        server.send_message(msg)
+                        server.quit()
+                        st.success(f"Email sent to {send_email_to}")
+                    except Exception as e:
+                        st.error(f"Failed to send email: {e}")
+
+        st.markdown("</div>", unsafe_allow_html=True)
+
+# ---------------- Footer ----------------
+st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
+st.markdown("<div class='app-card'>", unsafe_allow_html=True)
+foot_col1, foot_col2 = st.columns([0.12, 1])
+with foot_col1:
+    st.image("https://raw.githubusercontent.com/uroojfatima1234567/placeholder/main/logo_small.png", width=64)
+with foot_col2:
+    st.markdown("**Developed by Urooj Fatima** • Built with 🤖 SentenceTransformers & Streamlit")
+    st.caption("Note: For OCR on servers, Tesseract & Poppler may need to be installed. Locally set pytesseract.pytesseract.tesseract_cmd if needed.")
+st.markdown("</div>", unsafe_allow_html=True)
