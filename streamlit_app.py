@@ -1,6 +1,5 @@
 import os
 import io
-import json
 import tempfile
 import numpy as np
 import pandas as pd
@@ -11,10 +10,6 @@ import docx
 import pytesseract
 from pdf2image import convert_from_bytes
 import cv2
-from fpdf import FPDF
-import smtplib
-from email.message import EmailMessage
-from datetime import datetime
 
 # ----------------------------------------------------------------
 # PAGE CONFIG
@@ -31,81 +26,29 @@ st.set_page_config(
 def load_css():
     st.markdown("""
     <style>
-
-    body {
-        background-color: #f7f3ef !important;
-    }
-
-    .main {
-        padding: 2rem 4rem;
-        background-color: #f7f3ef;
-    }
+    body { background-color: #f7f3ef !important; }
+    .main { padding: 2rem 4rem; background-color: #f7f3ef; }
 
     /* Title */
-    .app-title {
-        font-size: 48px;
-        font-weight: 900;
-        color: #5d3a21;
-        text-align: center;
-        margin-bottom: -5px;
-        font-family: 'Segoe UI';
-    }
+    .app-title { font-size: 48px; font-weight: 900; color: #5d3a21; text-align: center; margin-bottom: -5px; font-family: 'Segoe UI'; }
 
     /* Subtitle */
-    .app-subtitle {
-        text-align: center;
-        font-size: 18px;
-        color: #8b5e3c;
-        margin-bottom: 40px;
-    }
+    .app-subtitle { text-align: center; font-size: 18px; color: #8b5e3c; margin-bottom: 40px; }
 
     /* Glass Card */
-    .glass-card {
-        background: rgba(255, 255, 255, 0.7);
-        padding: 25px;
-        border-radius: 18px;
-        border: 2px solid rgba(93, 58, 33, 0.12);
-        box-shadow: 0px 4px 12px rgba(0,0,0,0.08);
-        backdrop-filter: blur(8px);
-        margin-bottom: 25px;
-    }
+    .glass-card { background: rgba(255, 255, 255, 0.7); padding: 25px; border-radius: 18px; border: 2px solid rgba(93, 58, 33, 0.12); box-shadow: 0px 4px 12px rgba(0,0,0,0.08); margin-bottom: 25px; }
 
     /* Buttons */
-    .stButton>button {
-        width: 100%;
-        background-color: #5d3a21;
-        color: white;
-        border-radius: 10px;
-        height: 48px;
-        font-size: 18px;
-        border: none;
-        font-weight: 600;
-    }
-
-    .stButton>button:hover {
-        background-color: #7a4a29;
-    }
+    .stButton>button { width: 100%; background-color: #5d3a21; color: white; border-radius: 10px; height: 48px; font-size: 18px; border: none; font-weight: 600; }
+    .stButton>button:hover { background-color: #7a4a29; }
 
     /* Sidebar */
-    section[data-testid="stSidebar"] {
-        background-color: #e8dfd6;
-        border-right: 2px solid #cbb9a5;
-    }
-
-    .css-1d391kg, .css-1lcbmhc {
-        color: #5d3a21 !important;
-    }
-
+    section[data-testid="stSidebar"] { background-color: #e8dfd6; border-right: 2px solid #cbb9a5; }
+    .css-1d391kg, .css-1lcbmhc { color: #5d3a21 !important; }
     </style>
     """, unsafe_allow_html=True)
 
 load_css()
-
-
-# ----------------------------------------------------------------
-# SMTP SETTINGS
-# ----------------------------------------------------------------
-SMTP = st.secrets.get("smtp", {})
 
 # ----------------------------------------------------------------
 # MODEL LOADING
@@ -115,7 +58,6 @@ def load_model():
     return SentenceTransformer("all-MiniLM-L6-v2")
 
 model = load_model()
-
 
 # ----------------------------------------------------------------
 # TEXT EXTRACTION FUNCTIONS
@@ -131,7 +73,6 @@ def extract_text_from_image_bytes(file_bytes):
     except:
         return ""
 
-
 def extract_text_from_pdf_bytes(file_bytes):
     text = ""
     try:
@@ -139,7 +80,6 @@ def extract_text_from_pdf_bytes(file_bytes):
         for page in reader.pages:
             page_text = page.extract_text() or ""
             text += page_text + "\n"
-
         if text.strip():
             return text
     except:
@@ -158,12 +98,10 @@ def extract_text_from_pdf_bytes(file_bytes):
         text += "\n[OCR not available on server]"
     return text
 
-
 def extract_text_from_docx_bytes(file_bytes):
     with tempfile.NamedTemporaryFile(suffix=".docx", delete=False) as tmp:
         tmp.write(file_bytes)
         path = tmp.name
-
     try:
         document = docx.Document(path)
         text = "\n".join([p.text for p in document.paragraphs])
@@ -171,23 +109,18 @@ def extract_text_from_docx_bytes(file_bytes):
         text = ""
     finally:
         os.unlink(path)
-
     return text
-
 
 def extract_text_from_bytes(uploaded_file):
     name = uploaded_file.name.lower()
     data = uploaded_file.read()
-
     if name.endswith(".pdf"):
         return extract_text_from_pdf_bytes(data)
     if name.endswith(".docx"):
         return extract_text_from_docx_bytes(data)
     if name.endswith((".jpg", ".jpeg", ".png")):
         return extract_text_from_image_bytes(data)
-
     return ""
-
 
 # ----------------------------------------------------------------
 # EMBEDDING FUNCTIONS
@@ -199,12 +132,10 @@ def create_embedding(text):
     text = text.encode("ascii", "ignore").decode()[:5000]
     return model.encode(text)
 
-
 def cosine_similarity(a, b):
     if np.linalg.norm(a) == 0 or np.linalg.norm(b) == 0:
         return 0.0
     return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b)))
-
 
 # ----------------------------------------------------------------
 # UI HEADER
@@ -217,7 +148,6 @@ st.markdown("<p class='app-subtitle'>Smart • Fast • Accurate — Compare Doc
 # ----------------------------------------------------------------
 st.markdown("<div class='glass-card'>", unsafe_allow_html=True)
 st.subheader("📤 Upload Documents")
-
 uploaded_files = st.file_uploader(
     "Upload PDF, DOCX, JPG, PNG files",
     type=["pdf", "docx", "jpg", "jpeg", "png"],
@@ -229,75 +159,58 @@ st.markdown("</div>", unsafe_allow_html=True)
 # SETTINGS SECTION
 # ----------------------------------------------------------------
 st.markdown("<div class='glass-card'>", unsafe_allow_html=True)
-
 st.subheader("⚙️ Settings")
-
-similarity_threshold = st.slider(
-    "Duplicate threshold (%)",
-    0, 100, 90
-)
-
+similarity_threshold = st.slider("Duplicate threshold (%)", 0, 100, 90)
 include_text = st.checkbox("Include extracted text in report")
-
 st.markdown("</div>", unsafe_allow_html=True)
 
 # ----------------------------------------------------------------
-# COMPARE BUTTON
+# COMPARE BUTTON & MAIN LOGIC
 # ----------------------------------------------------------------
 st.markdown("<div class='glass-card'>", unsafe_allow_html=True)
-
 st.subheader("🚀 Start Comparison")
-start_btn = st.button("🔍 Compare Files Now")
 
-st.markdown("</div>", unsafe_allow_html=True)
-
-
-# ----------------------------------------------------------------
-# MAIN LOGIC
-# ----------------------------------------------------------------
-if start_btn:
+if st.button("🔍 Compare Files Now"):
     if not uploaded_files or len(uploaded_files) < 2:
-        st.error("Please upload at least two files.")
+        st.error("Please upload at least two files to compare.")
     else:
         with st.spinner("Extracting text & computing embeddings..."):
             texts = {}
             embeddings = {}
-
             for file in uploaded_files:
                 file.seek(0)
                 txt = extract_text_from_bytes(file)
                 emb = create_embedding(txt)
-
                 texts[file.name] = txt
                 embeddings[file.name] = emb
 
         # Pairwise comparison
         results = []
-        names = [f.name for f in uploaded_files]
-
-        for i in range(len(names)):
-            for j in range(i + 1, len(names)):
-                a, b = names[i], names[j]
-                sim = cosine_similarity(embeddings[a], embeddings[b])
-                percent = round(sim * 100, 2)
+        file_names = list(texts.keys())
+        for i in range(len(file_names)):
+            for j in range(i + 1, len(file_names)):
+                f1, f2 = file_names[i], file_names[j]
+                sim_score = cosine_similarity(embeddings[f1], embeddings[f2])
+                sim_percent = round(sim_score * 100, 2)
                 results.append({
-                    "File A": a,
-                    "File B": b,
-                    "Similarity %": percent,
-                    "Duplicate": percent >= similarity_threshold
+                    "File A": f1,
+                    "File B": f2,
+                    "Similarity %": sim_percent,
+                    "Duplicate": "✅" if sim_percent >= similarity_threshold else "❌"
                 })
 
         df = pd.DataFrame(results)
-
-        st.success("Comparison Complete!")
+        st.success("✅ Comparison Complete!")
         st.dataframe(df)
 
-        # Extracted text section
-        st.subheader("📄 Extracted Text (Preview)")
-        for name, txt in texts.items():
-            with st.expander(name):
-                st.text(txt[:8000])
+        # Optional extracted text preview
+        if include_text:
+            st.subheader("📄 Extracted Text Preview")
+            for name, txt in texts.items():
+                with st.expander(name):
+                    st.text(txt[:8000])
 
+st.markdown("</div>", unsafe_allow_html=True)
 
 # ----------------------------------------------------------------
 # FOOTER
