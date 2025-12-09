@@ -1,6 +1,4 @@
-import os
-import io
-import tempfile
+import os, io, tempfile
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -11,236 +9,224 @@ import pytesseract
 from pdf2image import convert_from_bytes
 import cv2
 
-# ----------------------------------------------------------------
+# --------------------------------------------------
 # PAGE CONFIG
-# ----------------------------------------------------------------
+# --------------------------------------------------
 st.set_page_config(
     page_title="AI Duplicate Document Detector",
     page_icon="📁",
-    layout="wide"
+    layout="wide",
 )
 
-# ----------------------------------------------------------------
-# CUSTOM CSS (BEAUTIFUL THEME)
-# ----------------------------------------------------------------
-def load_css():
-    st.markdown("""
-    <style>
-    /* General Background */
-    body { background-color: #f7f3ef !important; font-family: 'Segoe UI', sans-serif; }
+# --------------------------------------------------
+# SESSION STATE (LOGIN)
+# --------------------------------------------------
+if "logged_in" not in st.session_state:
+    st.session_state.logged_in = False
 
-    /* Header */
-    .app-title {
-        font-size: 56px;
-        font-weight: 900;
-        color: #5d3a21;
-        text-align: center;
-        text-shadow: 1px 1px 2px rgba(0,0,0,0.1);
-        margin-bottom: 0;
-    }
-    .app-subtitle {
-        text-align: center;
-        font-size: 20px;
-        color: #8b5e3c;
-        margin-bottom: 40px;
-    }
+# --------------------------------------------------
+# CUSTOM CSS (PREMIUM UI)
+# --------------------------------------------------
+st.markdown("""
+<style>
+body {
+    background: linear-gradient(135deg,#f7efe7,#f1e6da);
+}
 
-    /* Glass Cards */
-    .glass-card {
-        background: linear-gradient(rgba(255,255,255,0.85), rgba(255,255,255,0.9));
-        padding: 30px;
-        border-radius: 20px;
-        border: 2px solid rgba(93, 58, 33, 0.12);
-        box-shadow: 0px 8px 20px rgba(0,0,0,0.1);
-        margin-bottom: 30px;
-        transition: transform 0.2s ease-in-out;
-    }
-    .glass-card:hover { transform: translateY(-4px); }
+.hero {
+    text-align:center;
+    padding:40px;
+}
 
-    /* Buttons */
-    .stButton>button {
-        width: 100%;
-        background: linear-gradient(135deg, #5d3a21, #7a4a29);
-        color: white;
-        border-radius: 12px;
-        height: 50px;
-        font-size: 18px;
-        font-weight: 600;
-        transition: all 0.3s ease;
-    }
-    .stButton>button:hover {
-        background: linear-gradient(135deg, #7a4a29, #5d3a21);
-        transform: scale(1.02);
-    }
+.hero h1 {
+    font-size:50px;
+    font-weight:900;
+    color:#4b2e19;
+}
 
-    /* Sidebar */
-    section[data-testid="stSidebar"] { background-color: #e8dfd6; border-right: 2px solid #cbb9a5; }
-    .css-1d391kg, .css-1lcbmhc { color: #5d3a21 !important; }
+.hero p {
+    font-size:18px;
+    color:#7a5336;
+}
 
-    /* Table styling */
-    .dataframe tbody tr:hover { background-color: rgba(245, 222, 179, 0.2) !important; }
+.card {
+    background: rgba(255,255,255,0.75);
+    backdrop-filter: blur(10px);
+    border-radius:20px;
+    padding:30px;
+    box-shadow:0px 10px 30px rgba(0,0,0,.1);
+    margin-bottom:30px;
+    border:1px solid rgba(120,80,50,0.2);
+}
 
-    /* Badges */
-    .duplicate { color: white; font-weight: bold; background-color: #4CAF50; padding: 3px 8px; border-radius: 8px; }
-    .not-duplicate { color: white; font-weight: bold; background-color: #f44336; padding: 3px 8px; border-radius: 8px; }
+.stButton>button {
+    width:100%;
+    background: linear-gradient(135deg,#6b4026,#8c5a3c);
+    color:white;
+    border-radius:14px;
+    height:48px;
+    font-size:18px;
+    font-weight:600;
+}
 
-    /* Footer */
-    footer { text-align:center; color:#5d3a21; font-size:15px; margin-top:50px; }
-    </style>
-    """, unsafe_allow_html=True)
+.stButton>button:hover {
+    transform: scale(1.02);
+    background: linear-gradient(135deg,#8c5a3c,#6b4026);
+}
 
-load_css()
+footer {
+    text-align:center;
+    margin-top:40px;
+    color:#6b4026;
+    font-size:15px;
+}
+</style>
+""", unsafe_allow_html=True)
 
-# ----------------------------------------------------------------
-# MODEL LOADING
-# ----------------------------------------------------------------
+# --------------------------------------------------
+# LOGIN PAGE
+# --------------------------------------------------
+def login_page():
+    st.markdown("<div class='hero'><h1>🔐 Secure Login</h1><p>AI Duplicate Document Detection System</p></div>", unsafe_allow_html=True)
+    st.markdown("<div class='card'>", unsafe_allow_html=True)
+
+    email = st.text_input("Email")
+    password = st.text_input("Password", type="password")
+
+    if st.button("Login"):
+        if email == "admin@gmail.com" and password == "admin123":
+            st.session_state.logged_in = True
+            st.success("Login Successful ✅")
+            st.rerun()
+        else:
+            st.error("Invalid credentials ❌")
+
+    st.markdown("</div>", unsafe_allow_html=True)
+
+
+# --------------------------------------------------
+# LOAD MODEL
+# --------------------------------------------------
 @st.cache_resource(show_spinner=False)
 def load_model():
     return SentenceTransformer("all-MiniLM-L6-v2")
 
 model = load_model()
 
-# ----------------------------------------------------------------
-# TEXT EXTRACTION FUNCTIONS
-# ----------------------------------------------------------------
-def extract_text_from_image_bytes(file_bytes):
-    np_arr = np.frombuffer(file_bytes, np.uint8)
-    img = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
-    if img is None: return ""
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    try: return pytesseract.image_to_string(gray)
-    except: return ""
-
-def extract_text_from_pdf_bytes(file_bytes):
-    text = ""
-    try:
-        reader = PdfReader(io.BytesIO(file_bytes))
-        for page in reader.pages:
-            text += (page.extract_text() or "") + "\n"
-        if text.strip(): return text
-    except: pass
-
-    try:
-        pages = convert_from_bytes(file_bytes)
-        for page in pages:
-            with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
-                page.save(tmp.name, "JPEG")
-                with open(tmp.name, "rb") as f:
-                    text += extract_text_from_image_bytes(f.read())
-                os.unlink(tmp.name)
-    except: text += "\n[OCR not available on server]"
-    return text
-
-def extract_text_from_docx_bytes(file_bytes):
-    with tempfile.NamedTemporaryFile(suffix=".docx", delete=False) as tmp:
-        tmp.write(file_bytes)
-        path = tmp.name
-    try:
-        doc = docx.Document(path)
-        text = "\n".join([p.text for p in doc.paragraphs])
-    except: text = ""
-    finally: os.unlink(path)
-    return text
-
-def extract_text_from_bytes(uploaded_file):
-    name = uploaded_file.name.lower()
+# --------------------------------------------------
+# TEXT EXTRACTION
+# --------------------------------------------------
+def extract_text(uploaded_file):
     data = uploaded_file.read()
-    if name.endswith(".pdf"): return extract_text_from_pdf_bytes(data)
-    if name.endswith(".docx"): return extract_text_from_docx_bytes(data)
-    if name.endswith((".jpg", ".jpeg", ".png")): return extract_text_from_image_bytes(data)
+    name = uploaded_file.name.lower()
+
+    if name.endswith(".pdf"):
+        reader = PdfReader(io.BytesIO(data))
+        return " ".join(p.extract_text() or "" for p in reader.pages)
+
+    if name.endswith(".docx"):
+        with tempfile.NamedTemporaryFile(delete=False) as tmp:
+            tmp.write(data)
+            doc = docx.Document(tmp.name)
+        os.unlink(tmp.name)
+        return "\n".join(p.text for p in doc.paragraphs)
+
+    if name.endswith((".jpg",".jpeg",".png")):
+        img = cv2.imdecode(np.frombuffer(data,np.uint8),cv2.IMREAD_COLOR)
+        if img is not None:
+            return pytesseract.image_to_string(cv2.cvtColor(img,cv2.COLOR_BGR2GRAY))
+
     return ""
 
-# ----------------------------------------------------------------
-# EMBEDDING FUNCTIONS
-# ----------------------------------------------------------------
-def create_embedding(text):
-    text = (text or "").strip()
-    if not text: return np.zeros((384,))
-    text = text.encode("ascii","ignore").decode()[:5000]
-    return model.encode(text)
+# --------------------------------------------------
+# EMBEDDING
+# --------------------------------------------------
+def embed(text):
+    return model.encode(text[:5000]) if text.strip() else np.zeros((384,))
 
-def cosine_similarity(a,b):
-    if np.linalg.norm(a)==0 or np.linalg.norm(b)==0: return 0.0
-    return float(np.dot(a,b)/(np.linalg.norm(a)*np.linalg.norm(b)))
+def similarity(a,b):
+    return float(np.dot(a,b)/(np.linalg.norm(a)*np.linalg.norm(b))) if np.linalg.norm(a) and np.linalg.norm(b) else 0
 
-# ----------------------------------------------------------------
-# HEADER
-# ----------------------------------------------------------------
-st.markdown("<h1 class='app-title'>📁 AI Duplicate Document Detector</h1>", unsafe_allow_html=True)
-st.markdown("<p class='app-subtitle'>Smart • Fast • Accurate — Compare Documents Using AI</p>", unsafe_allow_html=True)
+# --------------------------------------------------
+# MAIN APP
+# --------------------------------------------------
+def main_app():
 
-# ----------------------------------------------------------------
-# UPLOAD
-# ----------------------------------------------------------------
-st.markdown("<div class='glass-card'>", unsafe_allow_html=True)
-st.subheader("📤 Upload Documents")
-uploaded_files = st.file_uploader(
-    "PDF, DOCX, JPG, PNG",
-    type=["pdf","docx","jpg","jpeg","png"],
-    accept_multiple_files=True
-)
-st.markdown("</div>", unsafe_allow_html=True)
+    st.sidebar.success("✅ Logged In")
+    if st.sidebar.button("🚪 Logout"):
+        st.session_state.logged_in = False
+        st.rerun()
 
-# ----------------------------------------------------------------
-# SETTINGS
-# ----------------------------------------------------------------
-st.markdown("<div class='glass-card'>", unsafe_allow_html=True)
-st.subheader("⚙️ Settings")
-similarity_threshold = st.slider("Duplicate Threshold (%)", 0, 100, 90)
-include_text = st.checkbox("Include extracted text in report")
-st.markdown("</div>", unsafe_allow_html=True)
+    st.markdown("""
+    <div class='hero'>
+        <h1>📁 AI Duplicate Document Detector</h1>
+        <p>Smart • Fast • Accurate AI-based document similarity system</p>
+    </div>
+    """, unsafe_allow_html=True)
 
-# ----------------------------------------------------------------
-# COMPARISON
-# ----------------------------------------------------------------
-st.markdown("<div class='glass-card'>", unsafe_allow_html=True)
-st.subheader("🚀 Start Comparison")
+    # Upload
+    st.markdown("<div class='card'>", unsafe_allow_html=True)
+    st.subheader("📤 Upload Documents")
+    files = st.file_uploader(
+        "PDF, DOCX, JPG, PNG",
+        type=["pdf","docx","jpg","jpeg","png"],
+        accept_multiple_files=True
+    )
+    st.markdown("</div>", unsafe_allow_html=True)
 
-if st.button("🔍 Compare Files Now"):
-    if not uploaded_files or len(uploaded_files)<2:
-        st.error("Upload at least 2 files.")
-    else:
-        with st.spinner("Processing files..."):
-            texts, embeddings = {}, {}
-            for f in uploaded_files:
-                f.seek(0)
-                txt = extract_text_from_bytes(f)
-                emb = create_embedding(txt)
-                texts[f.name] = txt
-                embeddings[f.name] = emb
+    # Settings
+    st.markdown("<div class='card'>", unsafe_allow_html=True)
+    st.subheader("⚙️ Settings")
+    threshold = st.slider("Duplicate Threshold (%)",0,100,90)
+    show_text = st.checkbox("Include extracted text in report")
+    st.markdown("</div>", unsafe_allow_html=True)
 
-        # Pairwise comparison
-        results = []
-        names = list(texts.keys())
-        for i in range(len(names)):
-            for j in range(i+1,len(names)):
-                f1, f2 = names[i], names[j]
-                sim = cosine_similarity(embeddings[f1], embeddings[f2])
-                sim_pct = round(sim*100,2)
-                results.append({
-                    "File A": f1,
-                    "File B": f2,
-                    "Similarity %": sim_pct,
-                    "Duplicate": f"<span class='duplicate'>✅</span>" if sim_pct>=similarity_threshold else f"<span class='not-duplicate'>❌</span>"
-                })
-        df = pd.DataFrame(results)
-        st.success("✅ Comparison Complete!")
-        st.markdown(df.to_html(escape=False), unsafe_allow_html=True)
+    # Compare
+    st.markdown("<div class='card'>", unsafe_allow_html=True)
+    st.subheader("🚀 Compare Documents")
 
-        # Text preview
-        if include_text:
-            st.subheader("📄 Extracted Text Preview")
-            for name, txt in texts.items():
-                with st.expander(name):
-                    st.text(txt[:8000])
+    if st.button("🔍 Start Comparison"):
+        if not files or len(files) < 2:
+            st.error("Upload at least two files.")
+        else:
+            texts, embeds = {}, {}
+            with st.spinner("Analyzing documents..."):
+                for f in files:
+                    f.seek(0)
+                    txt = extract_text(f)
+                    texts[f.name] = txt
+                    embeds[f.name] = embed(txt)
 
-st.markdown("</div>", unsafe_allow_html=True)
+            results = []
+            names = list(texts.keys())
+            for i in range(len(names)):
+                for j in range(i+1,len(names)):
+                    score = round(similarity(embeds[names[i]],embeds[names[j]])*100,2)
+                    results.append({
+                        "File A": names[i],
+                        "File B": names[j],
+                        "Similarity (%)": score,
+                        "Duplicate": "✅ Yes" if score>=threshold else "❌ No"
+                    })
 
-# ----------------------------------------------------------------
-# FOOTER
-# ----------------------------------------------------------------
-st.markdown("""
-<footer>
-Developed by <b>Urooj Fatima</b> • Powered by SentenceTransformers & Streamlit
-</footer>
-""", unsafe_allow_html=True)
+            df = pd.DataFrame(results)
+            st.success("✅ Comparison Completed")
+            st.dataframe(df,use_container_width=True)
+
+            if show_text:
+                for k,v in texts.items():
+                    with st.expander(k):
+                        st.text(v[:6000])
+
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    st.markdown("<footer>Developed by <b>Urooj Fatima</b> • AI & Streamlit</footer>", unsafe_allow_html=True)
+
+
+# --------------------------------------------------
+# RUN
+# --------------------------------------------------
+if not st.session_state.logged_in:
+    login_page()
+else:
+    main_app()
