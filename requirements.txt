@@ -1,0 +1,9 @@
+streamlit
+sentence-transformers
+numpy
+pandas
+opencv-python-headless
+pdf2image
+pytesseract
+PyPDF2
+python-docx
