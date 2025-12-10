@@ -261,7 +261,7 @@ def main_app():
                     st.text(v[:6000])
 
     st.markdown("</div>", unsafe_allow_html=True)
-    st.markdown("<footer>Developed by <b>Urooj Fatima</b> • AI & Streamlit</footer>", unsafe_allow_html=True)
+    st.markdown("<footer>Developed by <b>Urooj Fatima & azrah jawaid</b> • AI & Streamlit</footer>", unsafe_allow_html=True)
 
 # --------------------------------------------------
 # RUN
