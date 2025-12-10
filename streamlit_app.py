@@ -104,11 +104,11 @@ def login_page():
     st.markdown("</div>", unsafe_allow_html=True)
 
 # --------------------------------------------------
-# LOAD MODEL (MPNet)
+# LOAD STATE-OF-THE-ART MODEL
 # --------------------------------------------------
 @st.cache_resource(show_spinner=False)
 def load_model():
-    return SentenceTransformer("sentence-transformers/all-mpnet-base-v2")
+    return SentenceTransformer("mixedbread-ai/mxbai-embed-large-v1")
 
 model = load_model()
 
@@ -124,7 +124,7 @@ def clean_text(text):
 # --------------------------------------------------
 # TEXT CHUNKING
 # --------------------------------------------------
-def chunk_text(text, chunk_size=300):
+def chunk_text(text, chunk_size=500):
     words = text.split()
     return [" ".join(words[i:i + chunk_size]) for i in range(0, len(words), chunk_size)]
 
@@ -136,43 +136,54 @@ def extract_text(uploaded_file):
     fname = uploaded_file.name.lower()
 
     if fname.endswith(".pdf"):
-        reader = PdfReader(io.BytesIO(data))
-        text = ""
-        for p in reader.pages:
-            t = p.extract_text() or ""
-            text += t + " "
-        return clean_text(text)
+        try:
+            reader = PdfReader(io.BytesIO(data))
+            text = ""
+            for p in reader.pages:
+                text += p.extract_text() or " "
+            return clean_text(text)
+        except:
+            return ""
 
     if fname.endswith(".docx"):
-        with tempfile.NamedTemporaryFile(delete=False) as tmp:
-            tmp.write(data)
-            doc = docx.Document(tmp.name)
-        os.unlink(tmp.name)
-        return clean_text("\n".join([p.text for p in doc.paragraphs]))
+        try:
+            with tempfile.NamedTemporaryFile(delete=False) as tmp:
+                tmp.write(data)
+                doc = docx.Document(tmp.name)
+            os.unlink(tmp.name)
+            return clean_text("\n".join([p.text for p in doc.paragraphs]))
+        except:
+            return ""
 
     if fname.endswith((".jpg", ".jpeg", ".png")):
-        img = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
-        if img is not None:
-            img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-            ocr = pytesseract.image_to_string(img)
-            return clean_text(ocr)
+        try:
+            img = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
+            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+            return clean_text(pytesseract.image_to_string(gray))
+        except:
+            return ""
 
     return ""
 
 # --------------------------------------------------
-# EMBEDDINGS
+# EMBEDDING FUNCTION (Chunking + Mean Pool)
 # --------------------------------------------------
-def get_embeddings(text):
+def embed(text):
+    text = text.strip()
+    if not text:
+        return np.zeros((1024,))  # embedding size of mxbai
+
     chunks = chunk_text(text)
-    return model.encode(chunks)
+    embeddings = model.encode(chunks, convert_to_numpy=True)
+    return np.mean(embeddings, axis=0)
 
 # --------------------------------------------------
-# SIMILARITY
+# COSINE SIMILARITY
 # --------------------------------------------------
-def compute_similarity(emb1, emb2):
-    sims = np.matmul(emb1, emb2.T)
-    top = np.sort(sims.flatten())[-5:]
-    return float(np.mean(top)) * 100
+def similarity(a, b):
+    if np.linalg.norm(a) == 0 or np.linalg.norm(b) == 0:
+        return 0
+    return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b)))
 
 # --------------------------------------------------
 # MAIN APP
@@ -204,7 +215,7 @@ def main_app():
     # Settings
     st.markdown("<div class='card'>", unsafe_allow_html=True)
     st.subheader("⚙️ Settings")
-    threshold = st.slider("Duplicate Threshold (%)", 0, 100, 85)
+    threshold = st.slider("Duplicate Threshold (%)", 0, 100, 90)
     show_text = st.checkbox("Include extracted text in report")
     st.markdown("</div>", unsafe_allow_html=True)
 
@@ -218,44 +229,30 @@ def main_app():
             st.error("Upload at least two files.")
             return
 
-        texts = {}
-        embeddings = {}
-        name_counter = {}
+        texts, embeds = {}, {}
 
-        with st.spinner("Extracting & analyzing..."):
-
-            for f in files:
+        with st.spinner("Analyzing documents..."):
+            for i, f in enumerate(files):
                 f.seek(0)
-
-                base = f.name
-                # Allow same name files
-                if base not in name_counter:
-                    name_counter[base] = 1
-                else:
-                    name_counter[base] += 1
-
-                unique_name = f"{base} ({name_counter[base]})"
-
-                text = extract_text(f)
-                texts[unique_name] = text
-                embeddings[unique_name] = get_embeddings(text)
+                txt = extract_text(f)
+                unique_name = f"{f.name}_{i}"  # ensures same-name files are unique
+                texts[unique_name] = txt
+                embeds[unique_name] = embed(txt)
 
         results = []
         names = list(texts.keys())
-
         for i in range(len(names)):
-            for j in range(i + 1, len(names)):
-                score = compute_similarity(embeddings[names[i]], embeddings[names[j]])
-
+            for j in range(i+1, len(names)):
+                score = round(similarity(embeds[names[i]], embeds[names[j]]) * 100, 2)
                 results.append({
                     "File A": names[i],
                     "File B": names[j],
-                    "Similarity (%)": round(score, 2),
+                    "Similarity (%)": score,
                     "Duplicate": "✅ Yes" if score >= threshold else "❌ No"
                 })
 
         df = pd.DataFrame(results)
-        st.success("Comparison Completed")
+        st.success("✅ Comparison Completed")
         st.dataframe(df, use_container_width=True)
 
         if show_text:
@@ -264,7 +261,6 @@ def main_app():
                     st.text(v[:6000])
 
     st.markdown("</div>", unsafe_allow_html=True)
-
     st.markdown("<footer>Developed by <b>Urooj Fatima</b> • AI & Streamlit</footer>", unsafe_allow_html=True)
 
 # --------------------------------------------------
